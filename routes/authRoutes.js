@@ -11,7 +11,7 @@ const bcrypt = require('bcryptjs');
 const client = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  'https://hiencuacau-api.onrender.com/api/auth/google/callback' 
+  'https://api-hiencuacau.onrender.com/api/auth/google/callback' 
 );
 
 // ==========================================
