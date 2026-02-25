@@ -300,7 +300,7 @@ router.post('/', verifyToken, async (req, res) => {
         } else if (session.mentalState === 'PANIC') {
             triageDirective = `\n[TRẠNG THÁI: KÍCH ĐỘNG/LO ÂU (PANIC)]\nMệnh lệnh: Dùng [EMO:GROUND]. Kéo họ về thực tại [OPEN_RELAX], nói năng vững chãi bảo vệ họ.`;
         } else {
-            triageDirective = `\n[TRẠNG THÁI: BÌNH THƯỜNG (REGULATED)]\nMệnh lệnh: Dùng [EMO:WARM]. Nói chuyện tự nhiên, tung hứng, vui vẻ, THOẢI MÁI PHẢN BIỆN HOẶC TRÊU ĐÙA NHẸ NHÀNG.`;
+            triageDirective = ``;
         }
 
         // ==========================================
