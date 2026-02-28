@@ -487,6 +487,9 @@ Danh sách id_video bắt buộc phải chọn đúng:
             AVAILABLE_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct"]; // Model cậu yêu cầu
             console.log("👁️ [VISION MODE] Kích hoạt Mắt thần Llama 4 Scout!");
         }
+
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
         
         // ⚡ Thiết lập Header cho Server-Sent Events (SSE) ngay từ đầu
         res.setHeader('Content-Type', 'text/event-stream');
