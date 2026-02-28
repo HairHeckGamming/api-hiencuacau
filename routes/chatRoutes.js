@@ -179,7 +179,7 @@ router.post('/', verifyToken, async (req, res) => {
         const { sessionId, message, chatMode, isIncognito, image } = req.body;
         if (!message || !message.trim()) return res.status(400).json({ error: "Tin nhắn trống." });
 
-        // 1. TẢI HOẶC TẠO SESSION & THEO DÕI STATE
+        // 1. LƯU TIN NHẮN (KHÔNG LƯU BASE64 VÀO DB ĐỂ CHỐNG TRÀN BỘ NHỚ)
         let session;
         if (sessionId) {
             session = await Session.findOne({ _id: sessionId, userId: req.user.id });
@@ -195,7 +195,6 @@ router.post('/', verifyToken, async (req, res) => {
             session = new Session({ userId: req.user.id, title: autoTitle, messages: [], mentalState: "IDLE" }); 
         }
 
-        // ⚡ KHÔNG LƯU ẢNH VÀO DB ĐỂ CHỐNG TRÀN BỘ NHỚ (Chỉ lưu text chú thích)
         const userSaveContent = image ? `${message.trim()}\n[Đã đính kèm một hình ảnh]` : message.trim();
         
         if (!isIncognito) {
@@ -208,23 +207,17 @@ router.post('/', verifyToken, async (req, res) => {
         // ------------------------------------------
         // 🚨 BƯỚC 1: TRIAGE ENGINE (VECTOR & RISK)
         // ------------------------------------------
-        // Khởi tạo Object an toàn để chống sập server
         let triage = { risk: "LOW", emotion: "bình thường", somatic_state: "NEUTRAL", valence: 0, arousal: 0 };
 
         if (userMsgContent !== '*(Thở dài mệt mỏi)*') {
             triage = await analyzeInputTriage(userMsgContent);
             console.log(`🧠 [VECTOR] Risk: ${triage.risk} | Valence: ${triage.valence} | Arousal: ${triage.arousal} | State: ${triage.somatic_state}`);
 
-            // 🚨 CHẶN ĐỨNG NGUY HIỂM (SHORT-CIRCUIT CŨ ĐƯỢC NÂNG CẤP)
             if (triage.risk === "HIGH") {
                 console.log("🚨 [CRISIS MODE] Kích hoạt chế độ đàm phán sinh tử!");
-                // Gắn cờ trạng thái tâm lý là Khủng hoảng để Lõi Prompt phía dưới nhận diện
                 session.mentalState = "CRISIS";
-                // LƯU Ý: Không dùng return res.json() để cắt đứt luồng nữa.
-                // Chúng ta sẽ cho phép đi tiếp xuống dưới để gọi AI (LLM) gỡ rối.
             }
         } else {
-            // Gán thẳng object thay vì gán thuộc tính để tránh lỗi undefined
             triage = {
                 risk: "LOW",
                 emotion: "kiệt sức", 
@@ -234,7 +227,6 @@ router.post('/', verifyToken, async (req, res) => {
             };
         }
 
-        // --- CẬP NHẬT STATE MACHINE LÂM SÀNG ---
         if (session.mentalState === "PANIC" && triage.arousal < 0.4) session.mentalState = "REGULATED";
         else if (triage.somatic_state !== "IDLE") session.mentalState = triage.somatic_state;
 
@@ -255,25 +247,20 @@ router.post('/', verifyToken, async (req, res) => {
         let memoryString = "Chưa có ký ức nào liên quan.";
         
         if (!isIncognito && extractor) {
-            // 1. Mã hóa câu hỏi hiện tại của user thành Vector
             const userVectorOutput = await extractor(userMsgContent, { pooling: 'mean', normalize: true });
             const userVector = Array.from(userVectorOutput.data);
-
-            // 2. Lấy toàn bộ Kho Ký Ức của User này ra
             const allMemories = await Memory.find({ userId: req.user.id });
 
             if (allMemories.length > 0) {
-                // 3. Đo lường sự đồng điệu (Similarity) giữa câu hỏi và từng ký ức
                 const scoredMemories = allMemories.map(mem => ({
                     content: mem.content,
                     score: cosineSimilarity(userVector, mem.embedding)
                 }));
 
-                // 4. Lọc ra những ký ức "Khớp ngữ nghĩa" (Score > 0.3) và lấy top 3
                 const relevantMemories = scoredMemories
-                    .filter(m => m.score > 0.3) // Ngưỡng đồng điệu
+                    .filter(m => m.score > 0.3)
                     .sort((a, b) => b.score - a.score)
-                    .slice(0, 3); // Lôi đúng 3 chuyện liên quan nhất ra
+                    .slice(0, 3);
 
                 if (relevantMemories.length > 0) {
                     memoryString = "Dưới đây là những gì họ từng chia sẻ với bạn trong quá khứ:\n" + 
@@ -441,9 +428,45 @@ Danh sách id_video bắt buộc phải chọn đúng:
             systemPrompt += `\n[LƯU Ý CHẾ ĐỘ UI]: Chế độ Lắng nghe. Chỉ cần phản hồi ngắn, đồng cảm, đừng khuyên gì cả.`;
         }
 
+        // ==========================================
+        // 👁️ BƯỚC MỚI: VISION PASS (MẮT THẦN ĐỌC ẢNH)
+        // ==========================================
+        let augmentedUserMessage = userMsgContent; // Mặc định là câu nói của người dùng
+
+        if (image) {
+            console.log("👁️ [VISION MODE] Đang nhờ Mắt thần phân tích ảnh...");
+            try {
+                // Gọi riêng một luồng API không stream cho Model Vision
+                const visionResponse = await groq.chat.completions.create({
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: "Hãy mô tả thật chi tiết bức ảnh này bằng tiếng Việt. Nếu có chữ hoặc đoạn chat trong ảnh, hãy trích xuất và đọc rõ nội dung chữ đó ra. Tập trung vào các chi tiết thể hiện cảm xúc, hoàn cảnh hoặc vấn đề mà bức ảnh muốn truyền tải." },
+                                { type: 'image_url', image_url: { url: image } }
+                            ]
+                        }
+                    ],
+                    model: "meta-llama/llama-4-scout-17b-16e-instruct", 
+                    temperature: 0.2,
+                    max_tokens: 500
+                });
+
+                const imageDescription = visionResponse.choices[0]?.message?.content || "Hệ thống không thể nhìn rõ ảnh này.";
+                console.log("📸 Kết quả từ Mắt Thần:\n", imageDescription);
+                
+                augmentedUserMessage = `[HỆ THỐNG]: Người dùng vừa đính kèm một hình ảnh. AI Thị giác đã phân tích bức ảnh và báo cáo nội dung lại như sau:\n"""\n${imageDescription}\n"""\n\n[LỜI NHẮN KÈM THEO CỦA NGƯỜI DÙNG]: "${userMsgContent}"\n\n-> LỆNH CỦA BẠN: Dựa vào mô tả ảnh trên và lời nhắn, hãy đóng vai Hiên để thấu cảm, xoa dịu và trò chuyện với cậu ấy.`;
+
+            } catch (visionErr) {
+                console.error("🚨 Lỗi Mắt thần Vision:", visionErr);
+                augmentedUserMessage = `[HỆ THỐNG]: Người dùng có gửi một hình ảnh nhưng mắt tôi đang bị mờ không xem được. Lời nhắn của họ: "${userMsgContent}"`;
+            }
+        }
+
+        // ==========================================
+        // 3. XÂY DỰNG API MESSAGES CHO MODEL CHAT (EMPATHY PASS)
+        // ==========================================
         const apiMessages = [{ role: 'system', content: systemPrompt }];
-        
-        // Reflective Silence (Chỉ lấy 6 tin gần nhất để giữ API nhẹ và mượt)
         const recentHistory = session.messages.slice(-6);
         let userSpamCount = 0;
         
@@ -454,39 +477,24 @@ Danh sách id_video bắt buộc phải chọn đúng:
         });
 
         if (userSpamCount >= 3) {
-            apiMessages.pop(); // Remove last user message
             apiMessages.push({ role: 'system', content: '[LƯU Ý NHẸ]: Bạn mình đang nhắn liên tục. Hãy tung hứng lại, đồng tình và bình luận về những gì họ vừa nhắn nhé.' });
-            // Re-add the message without being the last one
-            apiMessages.push({ role: 'user', content: userMsgContent });
         }
 
-        // ⚡ NẾU CÓ ẢNH: Xóa tin nhắn Text vừa push ở trên và thay bằng cấu trúc Mắt Thần (Vision Format)
+        // ⚡ NẾU CÓ ẢNH: Ghi đè tin nhắn cuối cùng bằng nội dung đã được nhồi "Báo cáo của Mắt thần"
         if (image) {
-            apiMessages.pop(); 
-            apiMessages.push({
-                role: 'user',
-                content: [
-                    { type: 'text', text: userMsgContent || "Hãy phân tích và chia sẻ cảm nhận về hình ảnh này với mình nhé." },
-                    { type: 'image_url', image_url: { url: image } } // Base64 Image
-                ]
-            });
+            apiMessages.pop(); // Rút tin nhắn user dạng Text ngắn gọn cũ ra
+            apiMessages.push({ role: 'user', content: augmentedUserMessage }); // Thay bằng Text mô tả siêu chi tiết
         }
 
         // ------------------------------------------
-        // 4. GỌI BỘ NÃO AI (STREAMING & AUTO-FALLBACK)
+        // 4. GỌI BỘ NÃO AI (STREAMING & AUTO-FALLBACK TỐI THƯỢNG)
         // ------------------------------------------
-        let AVAILABLE_MODELS = [
+        const AVAILABLE_MODELS = [
             "moonshotai/kimi-k2-instruct-0905", 
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b"
         ];
-
-        // ⚡ BẺ LÁI ROUTER TỰ ĐỘNG NẾU CÓ ẢNH
-        if (image) {
-            AVAILABLE_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct"]; // Model cậu yêu cầu
-            console.log("👁️ [VISION MODE] Kích hoạt Mắt thần Llama 4 Scout!");
-        }
 
         res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
         res.setHeader('Access-Control-Allow-Credentials', 'true');
