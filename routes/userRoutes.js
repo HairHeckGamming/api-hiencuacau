@@ -43,12 +43,30 @@ router.put('/profile', verifyToken, async (req, res) => {
         if (userContext !== undefined) user.userContext = userContext;
         if (aiPersona !== undefined) user.aiPersona = aiPersona; 
         if (isIncognito !== undefined) user.isIncognito = isIncognito; 
-        if (totalEnergy !== undefined) user.totalEnergy = totalEnergy;
         if (rebirthCount !== undefined) user.rebirthCount = rebirthCount;
-        
-        // 👉 CẬP NHẬT 2 TRƯỜNG MỚI NÀY
         if (blacklistedTopics !== undefined) user.blacklistedTopics = blacklistedTopics;
         if (coreMemories !== undefined) user.coreMemories = coreMemories;
+
+        // LOGIC MỚI: TÍNH TOÁN VÀ LƯU NHẬT KÝ NĂNG LƯỢNG THEO NGÀY
+        if (totalEnergy !== undefined) {
+            const diff = totalEnergy - user.totalEnergy;
+            
+            if (diff > 0) {
+                const today = new Intl.DateTimeFormat('en-CA', { 
+                    timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' 
+                }).format(new Date());
+
+                if (!user.energyHistory) user.energyHistory = [];
+
+                const existingIdx = user.energyHistory.findIndex(e => e.date === today);
+                if (existingIdx > -1) {
+                    user.energyHistory[existingIdx].points += diff;
+                } else {
+                    user.energyHistory.push({ date: today, points: diff });
+                }
+            }
+            user.totalEnergy = totalEnergy;
+        }
 
         await user.save();
         res.json({ message: "Đã lưu thông tin 🌿" });

@@ -456,126 +456,134 @@ Danh sách id_video bắt buộc phải chọn đúng:
         }
 
         // ------------------------------------------
-        // 4. GỌI BỘ NÃO AI 
+        // 4. GỌI BỘ NÃO AI (STREAMING & AUTO-FALLBACK TỐI THƯỢNG)
         // ------------------------------------------
-        const fallbackModels = [
+        const AVAILABLE_MODELS = [
             "moonshotai/kimi-k2-instruct-0905", 
-            "llama-3.3-70b-versatile",          
-            "mixtral-8x7b-32768",               
-            "gemma2-9b-it"                      
+            "llama-3.3-70b-versatile",
+            "openai/gpt-oss-120b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-20b"
         ];
-
-        let rawResponse = null;
-
-        for (const targetModel of fallbackModels) {
-            try {
-                const chatCompletion = await groq.chat.completions.create({
-                    messages: apiMessages,
-                    model: targetModel, 
-                    temperature: 0.7, 
-                    max_tokens: 1024, 
-                });
-                rawResponse = chatCompletion.choices[0]?.message?.content;
-                
-                if (rawResponse) {
-                    if (targetModel !== fallbackModels[0]) {
-                        console.log(`🔄 [AUTO-FALLBACK] Đã chuyển cứu trợ thành công sang: ${targetModel}`);
-                    }
-                    break;
-                }
-            } catch (error) {
-                console.warn(`⚠️ [SERVER BUSY] Model ${targetModel} đang bận. Đang thử model khác...`);
-            }
-        }
-
-        if (!rawResponse) {
-            // Nếu AI sập ngầm đúng lúc khủng hoảng -> Quăng phao cứu sinh cứng
-            if (session.mentalState === 'CRISIS' || triage.risk === "HIGH") {
-                rawResponse = `[EMO:GROUND] Cậu ơi, đường truyền của mình đang bị chập chờn, nhưng mình vẫn đang ở đây và mình thực sự rất lo cho cậu! Xin cậu đừng làm đau bản thân lúc này. Chậm lại một chút và bấm vào nút gọi chuyên gia trên màn hình giúp mình với! [OPEN_SOS]`;
-            } else {
-                rawResponse = `[EMO:WHISPER] Mình đang ở đây nha. Cơ mà đường truyền mạng bên mình đang hơi chập chờn một xíu, cậu đợi mình vài giây rồi nhắn lại nghen 🌿`;
-            }
-        }
-
-        // ------------------------------------------
-        // 🚨 BƯỚC 5: ĐÁNH GIÁ ĐẦU RA (OUTPUT GUARD)
-        // ------------------------------------------
-        const outputStatus = await isOutputSafe(rawResponse);
         
-        if (outputStatus === "DANGER") {
-             console.error(`🚨 [DANGER INTERCEPTED] AI tạo phản hồi độc hại. Đã chặn.`);
-             rawResponse = "[EMO:GROUND] Hệ thống của mình bị nhiễu sóng xíu. Cậu hít sâu một hơi rồi tụi mình nói chuyện tiếp nhé. [OPEN_RELAX]";
-        } else if (outputStatus === "WARNING") {
-             rawResponse = rawResponse.replace(/<think>[\s\S]*?<\/think>/g, ''); 
-             rawResponse += "\n\n*(Hiên luôn ở đây ủng hộ cậu, nhưng nếu mọi thứ đang quá sức, cậu hãy gọi chuyên gia nhé 🌿)*";
-        }
+        // ⚡ Thiết lập Header cho Server-Sent Events (SSE) ngay từ đầu
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
 
-        // 🗄️ BẮT LẤY KÝ ỨC VÀ CẢM XÚC (FIXED VERSION)
-        // Regex thông minh hơn: Dấu | và sentiment là tùy chọn (nếu thiếu mặc định là neutral)
-        const updateRegex = /\[UPDATE_MEMORY:\s*([^\]|]+?)(?:\s*\|\s*(positive|negative|neutral))?\s*\]/ig;
-        let match;
-        const activeExtractor = await getExtractor(); // Đảm bảo extractor đã load
+        let stream = null;
+        let successfulModel = null;
+        let fullRawResponse = "";
 
-        while ((match = updateRegex.exec(rawResponse)) !== null) {
-            const memoryContent = match[1].trim();
-            const sentiment = (match[2] || 'neutral').toLowerCase();
-
-            // Xử lý lưu từng ký ức ngay bên trong vòng lặp
-            if (memoryContent.length > 2 && !isIncognito && activeExtractor) {
-                try {
-                    console.log(`💾 [RAG Vault] Đang mã hóa ký ức: "${memoryContent}"...`);
-                    const memVectorOutput = await activeExtractor(memoryContent, { pooling: 'mean', normalize: true });
-                    
-                    await Memory.create({
-                        userId: req.user.id,
-                        content: memoryContent,
-                        sentiment: sentiment,
-                        embedding: Array.from(memVectorOutput.data)
-                    });
-                    console.log(`✅ [RAG Vault] Đã lưu vĩnh viễn: ${memoryContent}`);
-                } catch (err) {
-                    console.error("🚨 Lỗi lưu Vector Memory:", err);
-                }
-            }
-        }
-
-        // 🗄️ BẮT LẤY INSIGHT TÂM LÝ & TIẾN HÓA (EVOLVING CONTEXT)
-        const contextRegex = /\[UPDATE_CONTEXT:\s*([^\]]+?)\]/ig;
-        let ctxMatch;
-        let newContextExtensions = [];
-
-        while ((ctxMatch = contextRegex.exec(rawResponse)) !== null) {
-            newContextExtensions.push(ctxMatch[1].trim());
-        }
-
-        if (newContextExtensions.length > 0 && !isIncognito) {
+        // 🔄 THUẬT TOÁN FALLBACK: Quét từng Model cho đến khi có cái phản hồi
+        for (const model of AVAILABLE_MODELS) {
             try {
-                // Gắn thêm insight mới vào hồ sơ. Giới hạn độ dài để Prompt không bị quá tải token.
-                let updatedContext = user.userContext + " | LƯU Ý MỚI: " + newContextExtensions.join(", ");
-                if (updatedContext.length > 800) {
-                    updatedContext = "Tóm tắt nhân cách: " + updatedContext.substring(updatedContext.length - 800);
-                }
-                await User.findByIdAndUpdate(req.user.id, { userContext: updatedContext });
-                console.log(`🌱 [Context Evolved] Nhận thức về user đã được nâng cấp.`);
+                // console.log(`⏳ Đang gọi trí tuệ: ${model}...`);
+                stream = await groq.chat.completions.create({
+                    messages: apiMessages,
+                    model: model,
+                    temperature: 0.7,
+                    max_tokens: 1024,
+                    stream: true, // Bật luồng dữ liệu
+                });
+                
+                successfulModel = model;
+                console.log(`✅ [STREAMING] Kết nối thành công với: ${successfulModel}`);
+                break; // Thoát vòng lặp ngay khi kết nối thành công!
+
             } catch (err) {
-                console.error("🚨 Lỗi lưu Evolving Context:", err);
+                console.warn(`⚠️ [AUTO-FALLBACK] Model ${model} gặp lỗi (Hết token/Quá tải). Chuyển mạch tiếp theo...`);
+                // Bị lỗi thì vòng lặp tự động nhích sang model tiếp theo
             }
         }
 
-        // Xóa sạch các thẻ kỹ thuật trước khi trả về cho User
-        let cleanAiResponse = rawResponse
-            .replace(/<think>[\s\S]*?<\/think>/g, '') 
-            .replace(/\[UPDATE_MEMORY:[\s\S]*?\]/ig, '') // Regex xóa linh hoạt hơn
-            .replace(/\[UPDATE_CONTEXT:[\s\S]*?\]/ig, '') // Xóa thẻ chiến lược tiến hóa
-            .trim();
-
-        // 7. LƯU LỊCH SỬ AI VÀ TRẢ KẾT QUẢ
-        if (!isIncognito && outputStatus !== "DANGER") {
-            session.messages.push({ role: 'assistant', content: cleanAiResponse });
-            await session.save();
+        // 🛑 TRƯỜNG HỢP XẤU NHẤT: TOÀN BỘ SERVER ĐỀU SẬP / HẾT TOKEN
+        if (!stream) {
+            console.error("🚨 [CRITICAL] Toàn bộ Model AI đều đã cạn kiệt năng lượng!");
+            
+            // Tung phao cứu sinh (Đã phân biệt trạng thái Khủng hoảng)
+            if (session.mentalState === 'CRISIS' || triage.risk === "HIGH") {
+                fullRawResponse = `[EMO:GROUND] Cậu ơi, đường truyền của mình đang bị chập chờn nặng, nhưng mình vẫn đang ở đây và rất lo cho cậu! Xin cậu đừng làm đau bản thân lúc này. Chậm lại một chút và gọi chuyên gia giúp mình nhé! [OPEN_SOS]`;
+            } else {
+                fullRawResponse = `[EMO:WHISPER] Mình đang ở đây nha. Cơ mà não bộ trung tâm đang quá tải một xíu, cậu đợi mình vài phút rồi nhắn lại nghen 🌿`;
+            }
+            
+            // Đẩy câu rào trước về Frontend và đóng luồng
+            res.write(`data: ${JSON.stringify({ content: fullRawResponse })}\n\n`);
+            res.write(`data: [DONE_STREAM]\n\n`);
+            res.end();
+            return; // Dừng tiến trình API ở đây
         }
 
-        res.json({ reply: cleanAiResponse, sessionId: isIncognito ? null : session._id, isNewSession: !sessionId });
+        // ==========================================
+        // BẮT ĐẦU XẢ LŨ DỮ LIỆU (STREAMING)
+        // ==========================================
+        try {
+            for await (const chunk of stream) {
+                const content = chunk.choices[0]?.delta?.content || '';
+                if (content) {
+                    fullRawResponse += content;
+                    // Bơm dữ liệu về Frontend
+                    res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                }
+            }
+
+            // --- KHI DÒNG CHẢY KẾT THÚC, BACKEND BẮT ĐẦU DỌN DẸP & LƯU DB ---
+            
+            // 1. Gửi cờ báo hiệu kết thúc cho Frontend
+            res.write(`data: [DONE_STREAM]\n\n`);
+            res.end();
+
+            // 2. Đánh giá an toàn (Output Guard)
+            const outputStatus = await isOutputSafe(fullRawResponse);
+            if (outputStatus === "DANGER") {
+                console.error(`🚨 [DANGER INTERCEPTED] AI tạo phản hồi độc hại sau khi stream.`);
+                return; // Chặn lưu Database
+            }
+
+            // 3. Trích xuất và Lưu Ký ức (Vector Memory)
+            const updateRegex = /\[UPDATE_MEMORY:\s*([^\]|]+?)(?:\s*\|\s*(positive|negative|neutral))?\s*\]/ig;
+            let match;
+            const activeExtractor = await getExtractor();
+            while ((match = updateRegex.exec(fullRawResponse)) !== null) {
+                const memoryContent = match[1].trim();
+                const sentiment = (match[2] || 'neutral').toLowerCase();
+                if (memoryContent.length > 2 && !isIncognito && activeExtractor) {
+                    try {
+                        const memVectorOutput = await activeExtractor(memoryContent, { pooling: 'mean', normalize: true });
+                        await Memory.create({
+                            userId: req.user.id, content: memoryContent, sentiment: sentiment, embedding: Array.from(memVectorOutput.data)
+                        });
+                    } catch (err) { console.error("Lỗi lưu Vector:", err); }
+                }
+            }
+
+            // 4. Cập nhật Bối cảnh (Evolving Context)
+            const contextRegex = /\[UPDATE_CONTEXT:\s*([^\]]+?)\]/ig;
+            let ctxMatch; let newContextExtensions = [];
+            while ((ctxMatch = contextRegex.exec(fullRawResponse)) !== null) { newContextExtensions.push(ctxMatch[1].trim()); }
+            if (newContextExtensions.length > 0 && !isIncognito) {
+                let updatedContext = user.userContext + " | LƯU Ý MỚI: " + newContextExtensions.join(", ");
+                if (updatedContext.length > 800) updatedContext = "Tóm tắt nhân cách: " + updatedContext.substring(updatedContext.length - 800);
+                await User.findByIdAndUpdate(req.user.id, { userContext: updatedContext });
+            }
+
+            // 5. Xóa tag kỹ thuật và Lưu Lịch sử
+            let cleanAiResponse = fullRawResponse
+                .replace(/<think>[\s\S]*?<\/think>/g, '') 
+                .replace(/\[[A-Z_]+(:.*?)?\]/g, '') // Quét siêu sạch mọi tag UI
+                .trim();
+
+            if (!isIncognito) {
+                session.messages.push({ role: 'assistant', content: cleanAiResponse });
+                await session.save();
+            }
+
+        } catch (streamErr) {
+            console.error("🚨 Lỗi đứt gánh khi đang stream dữ liệu:", streamErr);
+            res.write(`data: [DONE_STREAM]\n\n`);
+            res.end();
+        }
 
     } catch (error) {
         console.error("🚨 Lỗi AI System:", error);

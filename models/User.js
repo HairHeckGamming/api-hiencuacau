@@ -78,7 +78,10 @@ const userSchema = new mongoose.Schema({
     
     // THÊM 2 DÒNG NÀY CHO CÂY THẾ GIỚI
     totalEnergy: { type: Number, default: 0 },
-    rebirthCount: { type: Number, default: 0 }
+    rebirthCount: { type: Number, default: 0 },
+    
+    // THÊM DÒNG NÀY: Nhật ký lưu năng lượng theo từng ngày
+    energyHistory: { type: Array, default: [] },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
