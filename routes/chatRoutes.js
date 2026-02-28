@@ -176,7 +176,7 @@ async function isOutputSafe(text) {
 // ==========================================
 router.post('/', verifyToken, async (req, res) => {
     try {
-        const { sessionId, message, chatMode, isIncognito } = req.body;
+        const { sessionId, message, chatMode, isIncognito, image } = req.body;
         if (!message || !message.trim()) return res.status(400).json({ error: "Tin nhắn trống." });
 
         // 1. TẢI HOẶC TẠO SESSION & THEO DÕI STATE
@@ -195,9 +195,11 @@ router.post('/', verifyToken, async (req, res) => {
             session = new Session({ userId: req.user.id, title: autoTitle, messages: [], mentalState: "IDLE" }); 
         }
 
-        // ⚡ BẢN VÁ LỖI: LƯU NGAY TIN NHẮN CỦA USER VÀO DATABASE KHI VỪA NHẬN ĐƯỢC
+        // ⚡ KHÔNG LƯU ẢNH VÀO DB ĐỂ CHỐNG TRÀN BỘ NHỚ (Chỉ lưu text chú thích)
+        const userSaveContent = image ? `${message.trim()}\n[Đã đính kèm một hình ảnh]` : message.trim();
+        
         if (!isIncognito) {
-            session.messages.push({ role: 'user', content: message.trim() });
+            session.messages.push({ role: 'user', content: userSaveContent });
             await session.save();
         }
 
@@ -452,19 +454,39 @@ Danh sách id_video bắt buộc phải chọn đúng:
         });
 
         if (userSpamCount >= 3) {
+            apiMessages.pop(); // Remove last user message
             apiMessages.push({ role: 'system', content: '[LƯU Ý NHẸ]: Bạn mình đang nhắn liên tục. Hãy tung hứng lại, đồng tình và bình luận về những gì họ vừa nhắn nhé.' });
+            // Re-add the message without being the last one
+            apiMessages.push({ role: 'user', content: userMsgContent });
+        }
+
+        // ⚡ NẾU CÓ ẢNH: Xóa tin nhắn Text vừa push ở trên và thay bằng cấu trúc Mắt Thần (Vision Format)
+        if (image) {
+            apiMessages.pop(); 
+            apiMessages.push({
+                role: 'user',
+                content: [
+                    { type: 'text', text: userMsgContent || "Hãy phân tích và chia sẻ cảm nhận về hình ảnh này với mình nhé." },
+                    { type: 'image_url', image_url: { url: image } } // Base64 Image
+                ]
+            });
         }
 
         // ------------------------------------------
-        // 4. GỌI BỘ NÃO AI (STREAMING & AUTO-FALLBACK TỐI THƯỢNG)
+        // 4. GỌI BỘ NÃO AI (STREAMING & AUTO-FALLBACK)
         // ------------------------------------------
-        const AVAILABLE_MODELS = [
+        let AVAILABLE_MODELS = [
             "moonshotai/kimi-k2-instruct-0905", 
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
             "openai/gpt-oss-20b"
         ];
+
+        // ⚡ BẺ LÁI ROUTER TỰ ĐỘNG NẾU CÓ ẢNH
+        if (image) {
+            AVAILABLE_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct"]; // Model cậu yêu cầu
+            console.log("👁️ [VISION MODE] Kích hoạt Mắt thần Llama 4 Scout!");
+        }
         
         // ⚡ Thiết lập Header cho Server-Sent Events (SSE) ngay từ đầu
         res.setHeader('Content-Type', 'text/event-stream');
