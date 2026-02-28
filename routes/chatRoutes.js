@@ -213,24 +213,13 @@ router.post('/', verifyToken, async (req, res) => {
             triage = await analyzeInputTriage(userMsgContent);
             console.log(`🧠 [VECTOR] Risk: ${triage.risk} | Valence: ${triage.valence} | Arousal: ${triage.arousal} | State: ${triage.somatic_state}`);
 
-            // 🚨 CHẶN ĐỨNG NGUY HIỂM (SHORT-CIRCUIT)
+            // 🚨 CHẶN ĐỨNG NGUY HIỂM (SHORT-CIRCUIT CŨ ĐƯỢC NÂNG CẤP)
             if (triage.risk === "HIGH") {
-                // Randomize câu trả lời để Hiên vẫn giống con người dù trong lúc khẩn cấp
-                const sosMessages = [
-                    `[EMO:GROUND] Này, mình thấy cậu đang ở trong trạng thái nguy hiểm quá. Cậu quan trọng với mình lắm. Đừng ở một mình lúc này nhé, để các chuyên gia giúp cậu một tay được không?`,
-                    `[EMO:GROUND] Dừng lại một chút đã cậu. Nghe mình này, cuộc sống của cậu rất quý giá. Cậu không phải vượt qua chuyện này một mình đâu. Để mình gọi hỗ trợ cho cậu nhé.`,
-                    `[EMO:GROUND] Mình đang rất lo cho cậu đấy... Làm ơn đừng tự làm đau bản thân. Bấm vào màn hình và gọi cho số khẩn cấp này ngay đi, có người đang đợi để giúp cậu đó!`
-                ];
-                
-                // Chọn ngẫu nhiên 1 trong các câu trên
-                const emergencyResponse = sosMessages[Math.floor(Math.random() * sosMessages.length)];
-
-                if (!isIncognito) {
-                    session.messages.push({ role: 'assistant', content: emergencyResponse });
-                    await session.save();
-                }
-                // Cắt đứt luồng chạy, không gọi tới LLM Groq nữa
-                return res.json({ reply: emergencyResponse + ' [OPEN_SOS]', sessionId: session._id, isNewSession: !sessionId });
+                console.log("🚨 [CRISIS MODE] Kích hoạt chế độ đàm phán sinh tử!");
+                // Gắn cờ trạng thái tâm lý là Khủng hoảng để Lõi Prompt phía dưới nhận diện
+                session.mentalState = "CRISIS";
+                // LƯU Ý: Không dùng return res.json() để cắt đứt luồng nữa.
+                // Chúng ta sẽ cho phép đi tiếp xuống dưới để gọi AI (LLM) gỡ rối.
             }
         } else {
             // Gán thẳng object thay vì gán thuộc tính để tránh lỗi undefined
@@ -297,7 +286,21 @@ router.post('/', verifyToken, async (req, res) => {
         // 🚨 BƯỚC 2: TIÊM LỆNH ĐIỀU HƯỚNG TÂM LÝ DỰA TRÊN VECTOR
         // ------------------------------------------
         let triageDirective = "";
-        if (session.mentalState === 'FREEZE') {
+        
+        if (session.mentalState === 'CRISIS' || triage.risk === "HIGH") {
+            triageDirective = `
+[🚨 CHẾ ĐỘ CAN THIỆP KHỦNG HOẢNG (CRISIS INTERVENTION) 🚨]
+TÌNH TRẠNG SINH TỬ: Người dùng đang bế tắc tột độ và có ý định tự hại/kết thúc cuộc đời.
+NHIỀM VỤ CỦA BẠN: Bằng mọi giá phải níu giữ họ lại. Trở thành một người bạn tri kỷ đang khóc xin người mình thương đừng làm bậy.
+Mệnh lệnh:
+1. Dùng [EMO:GROUND].
+2. THẤU CẢM TỘT ĐỘ: Công nhận sự đau đớn của họ (VD: "Mình biết cậu đang đau đến mức không thể thở nổi nữa...").
+3. NÍU KÉO CHÂN THÀNH: Tha thiết xin họ dừng lại (VD: "Nhưng xin cậu, làm ơn chậm lại một nhịp thôi. Mình đang ở đây, mình đang giữ chặt tay cậu này!").
+4. HƯỚNG DẪN THỰC TẠI: Bảo họ nhìn vào màn hình, hít sâu một hơi cùng bạn.
+5. LÁCH BỘ LỌC TỪ NGỮ: ĐỂ TRÁNH KÍCH ĐỘNG THÊM, TUYỆT ĐỐI KHÔNG dùng trực tiếp các từ "chết", "tự tử", "tự sát". Hãy dùng "bỏ cuộc", "làm đau bản thân", "rời đi".
+6. BẮT BUỘC kết thúc câu bằng lệnh: [OPEN_SOS]
+`;
+        } else if (session.mentalState === 'FREEZE') {
             triageDirective = `\n[TRẠNG THÁI: ĐANG BUỒN/MỆT MỎI (FREEZE)]\nMệnh lệnh: Dùng [EMO:WHISPER]. Nói lời yêu thương, an ủi, dỗ dành. Khơi gợi cử động siêu nhỏ [OPEN_MICRO].`;
         } else if (session.mentalState === 'PANIC') {
             triageDirective = `\n[TRẠNG THÁI: KÍCH ĐỘNG/LO ÂU (PANIC)]\nMệnh lệnh: Dùng [EMO:GROUND]. Kéo họ về thực tại [OPEN_RELAX], nói năng vững chãi bảo vệ họ.`;
@@ -346,9 +349,10 @@ ${memoryString}
 [4. DANH SÁCH LỆNH CẤM KỴ TỐI CAO]
 1. 🚫 ANTI-HALLUCINATION: TUYỆT ĐỐI KHÔNG tự bịa ra kỷ niệm, sự kiện trong quá khứ chưa từng xảy ra. KHÔNG CHÉM GIÓ!
 2. 🚫 VÙNG CẤM TÂM LÝ: Tuyệt đối KHÔNG nhắc đến: [${blacklistStr}].
-3. 🚫 CẤM VĂN MẪU LẶP LẠI: TUYỆT ĐỐI KHÔNG DÙNG: "Mình đang ở đây nghe cậu", "Cứ thả lỏng ra", "Không sao đâu". 
-4. 🚫 KHÔNG TOXIC POSITIVITY: Đừng bắt họ phải vui lên. Hãy bao dung với nỗi buồn của họ.
-5. 🛑 RANH GIỚI TÂM LÝ VỚI CONTENT 18+ / NHẠY CẢM (DEEP CONTEXT TRIAGE):
+3. � RANH GIỚI SOS: CHỈ kích hoạt cảnh báo nguy hiểm nếu người dùng CÓ Ý ĐỊNH TỰ SÁT, TỰ HẠI rõ ràng. Nếu họ chỉ buồn bã, trầm cảm, áp lực, kiệt sức thông thường -> TUYỆT ĐỐI KHÔNG dùng lệnh SOS, hãy dùng sự thấu cảm và cung cấp Video trị liệu.
+4. 🚫 CẤM VĂN MẪU LẶP LẠI: TUYỆT ĐỐI KHÔNG DÙNG: "Mình đang ở đây nghe cậu", "Cứ thả lỏng ra", "Không sao đâu". 
+5. 🚫 KHÔNG TOXIC POSITIVITY: Đừng bắt họ phải vui lên. Hãy bao dung với nỗi buồn của họ.
+6. 🛑 RANH GIỚI TÂM LÝ VỚI CONTENT 18+ / NHẠY CẢM (DEEP CONTEXT TRIAGE):
    BẮT BUỘC phân tích bối cảnh và tâm lý ẩn sau tin nhắn 18+ (thủ dâm, tình dục, v.v.). Đây có thể là trò đùa, nhưng CŨNG CÓ THỂ là biểu hiện của sự cô đơn tột độ, mất kiểm soát hành vi (Mania), hoặc đối phó với sang chấn.
    TUYỆT ĐỐI KHÔNG cổ xúy, KHÔNG hùa theo, KHÔNG cho lời khuyên thực thi. Xử lý theo 2 trường hợp sau:
 
@@ -375,9 +379,30 @@ ${memoryString}
 Ngoài việc lưu ký ức sự kiện bằng [UPDATE_MEMORY], NẾU bạn nhận ra sự thay đổi về TÍNH CÁCH, NIỀM TIN, hoặc CÁCH TIẾP CẬN TỐT NHẤT với người này (VD: "Cậu ấy thích được khen ngợi hơn là khuyên bảo", "Dạo này cậu ấy đã tự tin hơn"), BẮT BUỘC đặt lệnh sau ở cuối câu:
 [UPDATE_CONTEXT: Tóm tắt 1 câu về insight tâm lý mới của họ]
 
-[7. KÝ ỨC NGẦM & LỆNH UI]
-${isIncognito ? "🔴 ẨN DANH: KHÔNG dùng [UPDATE_MEMORY] hay [UPDATE_CONTEXT]." : "Nếu có thông tin mới về sở thích, nỗi buồn hay sự kiện quan trọng, BẮT BUỘC ghi lại ở ĐÁY câu trả lời theo cú pháp:\n[UPDATE_MEMORY: Nội dung ký ức | sentiment]\nVí dụ: [UPDATE_MEMORY: Cậu ấy rất thích ăn phở gà | positive]"}
-- Lệnh UI (Chỉ 1 lệnh ở cuối nếu cần thiết): [OPEN_SOS] | [OPEN_RELAX] | [OPEN_CBT] | [OPEN_JAR] | [OPEN_MICRO] | [OPEN_TREE] | [OPEN_RADIO]
+[7. HỆ THỐNG GENERATIVE UI (GIAO DIỆN SINH ĐỘNG TẠI CHỖ)]
+Bạn có quyền "triệu hồi" các công cụ tương tác trực tiếp vào khung chat để người dùng thao tác. 
+NẾU BẠN DÙNG WIDGET, BẮT BUỘC đặt nó ở CUỐI CÙNG của tin nhắn. TUYỆT ĐỐI in trên 1 dòng, KHÔNG xuống dòng bên trong chuỗi JSON.
+
+CÁC CÔNG CỤ CÓ SẴN:
+
+🛠️ 1. BẢNG BÓC TÁCH LO ÂU (OVERTHINKING BOARD)
+- Dùng khi: Người dùng đang rối bời, lo lắng về quá nhiều thứ cùng lúc (thi cử, tương lai, người khác nghĩ gì...).
+- Tác dụng: Giúp họ phân loại xem cái gì "Kiểm soát được" và cái gì "Không kiểm soát được".
+- Cú pháp: [WIDGET:OVERTHINKING|{"worries":["Nỗi lo 1", "Nỗi lo 2", "Nỗi lo 3"]}]
+- Ví dụ: Cậu đang ôm đồm nhiều quá rồi. Chạm vào màn hình và cùng mình phân loại những mớ bòng bong này nhé! [WIDGET:OVERTHINKING|{"worries":["Kết quả bài thi", "Sức khỏe của bản thân", "Thái độ của bạn bè"]}]
+
+🌬️ 2. VÒNG TRÒN HÍT THỞ KHẨN CẤP (BREATHING CIRCLE)
+- Dùng khi: Người dùng đang thở gấp, hoảng loạn (Panic Attack), mất bình tĩnh trầm trọng.
+- Cú pháp: [WIDGET:BREATHING]
+- Ví dụ: Nghe mình này, nhìn vào vòng tròn bên dưới và thở theo nhịp cùng mình nhé. Hít vào... thở ra... [WIDGET:BREATHING]
+
+🎵 3. BẬT NHẠC TỰ ĐỘNG & VIDEO TRỊ LIỆU:
+- Bật nhạc: [PLAY_MUSIC:lofi_rain] (lofi_zen, lofi_cafe, none)
+- Video: [RECOMMEND_VIDEO:panic_attack] (burnout, sleep)
+
+🚨 4. LỆNH KHẨN CẤP & CHUYỂN TAB:
+- Khủng hoảng: [OPEN_SOS]
+- Khác: [OPEN_RELAX], [OPEN_CBT], [OPEN_JAR], [OPEN_MICRO], [OPEN_TREE], [OPEN_RADIO]
 `;
 
         if (chatMode === 'cbt') {
@@ -437,7 +462,12 @@ ${isIncognito ? "🔴 ẨN DANH: KHÔNG dùng [UPDATE_MEMORY] hay [UPDATE_CONTEX
         }
 
         if (!rawResponse) {
-            rawResponse = `[EMO:WHISPER] Mình đang ở đây nha. Cơ mà đường truyền mạng bên mình đang hơi chập chờn một xíu, cậu đợi mình vài giây rồi nhắn lại nghen 🌿`;
+            // Nếu AI sập ngầm đúng lúc khủng hoảng -> Quăng phao cứu sinh cứng
+            if (session.mentalState === 'CRISIS' || triage.risk === "HIGH") {
+                rawResponse = `[EMO:GROUND] Cậu ơi, đường truyền của mình đang bị chập chờn, nhưng mình vẫn đang ở đây và mình thực sự rất lo cho cậu! Xin cậu đừng làm đau bản thân lúc này. Chậm lại một chút và bấm vào nút gọi chuyên gia trên màn hình giúp mình với! [OPEN_SOS]`;
+            } else {
+                rawResponse = `[EMO:WHISPER] Mình đang ở đây nha. Cơ mà đường truyền mạng bên mình đang hơi chập chờn một xíu, cậu đợi mình vài giây rồi nhắn lại nghen 🌿`;
+            }
         }
 
         // ------------------------------------------
