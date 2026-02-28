@@ -11,7 +11,9 @@ const memoryRoutes = require('./routes/memoryRoutes');
 // ==========================================
 // 1. CẤU HÌNH MIDDLEWARE & CORS
 // ==========================================
-app.use(express.json()); // Cho phép server đọc được dữ liệu JSON
+// ⚡ NỚI LỎNG GIỚI HẠN LÊN 50MB ĐỂ CHỨA VỪA ẢNH BASE64
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Cấu hình CORS để Frontend (Render) và Backend có thể nói chuyện với nhau
 app.use(cors({
