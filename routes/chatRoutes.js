@@ -608,10 +608,11 @@ Danh sách id_video bắt buộc phải chọn đúng:
                 await User.findByIdAndUpdate(req.user.id, { userContext: updatedContext });
             }
 
-            // 5. Xóa tag kỹ thuật và Lưu Lịch sử
+            // 5. Xóa tag kỹ thuật ngầm và Lưu Lịch sử
             let cleanAiResponse = fullRawResponse
                 .replace(/<think>[\s\S]*?<\/think>/g, '') 
-                .replace(/\[[A-Z_]+(:.*?)?\]/g, '') // Quét siêu sạch mọi tag UI
+                // ⚡ CHỈ XÓA TAG KÝ ỨC NGẦM, GIỮ LẠI MỌI TAG GIAO DIỆN (WIDGET, VIDEO) ĐỂ LƯU DB
+                .replace(/\[(?:UPDATE_MEMORY|UPDATE_CONTEXT|SESSION_ID):.*?\]/ig, '')
                 .trim();
 
             if (!isIncognito) {
