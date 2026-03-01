@@ -179,8 +179,16 @@ router.post('/', verifyToken, async (req, res) => {
         const { sessionId, message, chatMode, isIncognito, image } = req.body;
         if (!message || !message.trim()) return res.status(400).json({ error: "Tin nhắn trống." });
 
-        // 1. LƯU TIN NHẮN (KHÔNG LƯU BASE64 VÀO DB ĐỂ CHỐNG TRÀN BỘ NHỚ)
+        // ⚡ 1. CHUYỂN HEADER LÊN ĐẦU TIÊN ĐỂ MỞ LUỒNG STREAM SỚM
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+        // 2. LƯU TIN NHẮN (KHÔNG LƯU BASE64 VÀO DB ĐỂ CHỐNG TRÀN BỘ NHỚ)
         let session;
+        let isNewSession = false;
         if (sessionId) {
             session = await Session.findOne({ _id: sessionId, userId: req.user.id });
             if (!session.mentalState) {
@@ -192,7 +200,12 @@ router.post('/', verifyToken, async (req, res) => {
             }
         } else {
             const autoTitle = message === '[SIGH_SIGNAL]' ? 'Một tiếng thở dài...' : (message.length > 30 ? message.substring(0, 30) + '...' : message);
-            session = new Session({ userId: req.user.id, title: autoTitle, messages: [], mentalState: "IDLE" }); 
+            session = new Session({ userId: req.user.id, title: autoTitle, messages: [], mentalState: "IDLE" });
+            await session.save();
+            isNewSession = true;
+            
+            // ⚡ 2. BẮN NGAY CÁI ID NÀY VỀ FRONTEND QUA DÒNG CHẢY
+            res.write(`data: ${JSON.stringify({ content: `[SESSION_ID:${session._id}]` })}\n\n`);
         }
 
         const userSaveContent = image ? `${message.trim()}\n[Đã đính kèm một hình ảnh]` : message.trim();
@@ -496,13 +509,7 @@ Danh sách id_video bắt buộc phải chọn đúng:
             "openai/gpt-oss-20b"
         ];
 
-        res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-        
-        // ⚡ Thiết lập Header cho Server-Sent Events (SSE) ngay từ đầu
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
+
 
         let stream = null;
         let successfulModel = null;
